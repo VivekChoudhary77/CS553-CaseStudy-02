@@ -1,0 +1,34 @@
+[project]
+name = "prompt-enhancer"
+version = "0.1.0"
+description = "Gradio app that rewrites rough prompts using a local model, Gemini, or OpenRouter with automatic failover."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "gradio",
+  "openai",
+  "transformers",
+  "torch",
+  "python-dotenv",
+]
+
+[project.scripts]
+prompt-enhancer = "prompt_enhancer.app:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

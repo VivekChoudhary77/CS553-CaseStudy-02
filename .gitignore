@@ -1,0 +1,25 @@
+# secrets
+.env
+relock.env
+*_key
+*_key.pub
+*.pem
+.cs553/
+# public-key list for the VM watchdog is safe to commit (not matched above, kept explicit)
+!ops/authorized_keys
+
+# python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# caches and logs
+.cache/
+*.log
+
+# course materials / personal notes (not part of the project)
+*.pdf
+Screenshot*.png
+previous_cs/
+Product spec.md
