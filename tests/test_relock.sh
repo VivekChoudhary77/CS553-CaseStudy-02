@@ -48,6 +48,11 @@ case "$cmd" in
   *'>>'*) # append
     if [[ -e "$SIM_VM/append_broken" ]]; then cat >/dev/null; exit 0; fi # "succeeds" but has no effect
     cat >>"$auth" ;;
+  *'state='*) # app service probe
+    echo "state=$(cat "$SIM_VM/app_state" 2>/dev/null || echo inactive) files=$(cat "$SIM_VM/app_files" 2>/dev/null || echo yes) age=$(cat "$SIM_VM/app_age" 2>/dev/null || echo 0)" ;;
+  *'systemctl restart'*)
+    if [[ -e "$SIM_VM/restart_fails" ]]; then exit 1; fi
+    if [[ -e "$SIM_VM/restart_heals" ]]; then touch "$SIM_VM/app_up"; fi ;;
   *) echo "fake ssh: unexpected remote command: $cmd" >&2; exit 127 ;;
 esac
 EOF
@@ -63,10 +68,33 @@ EOF
 
 cat >"$FAKEBIN/curl" <<'EOF'
 #!/usr/bin/env bash
+data="" url=""
 while [[ $# -gt 0 ]]; do
-  case "$1" in -d) echo "$2" >>"$SIM_VM/discord.log"; shift 2 ;; *) shift ;; esac
+  case "$1" in
+    -d) data="$2"; shift 2 ;;
+    -m|-H|-o) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
 done
-[[ ! -e "$SIM_VM/discord_down" ]]
+if [[ -n "$data" ]]; then # Discord webhook post
+  if [[ -e "$SIM_VM/discord_flaky" && ! -e "$SIM_VM/discord_flaked" ]]; then # fail once
+    touch "$SIM_VM/discord_flaked"
+    exit 22
+  fi
+  echo "$data" >>"$SIM_VM/discord.log"
+  [[ ! -e "$SIM_VM/discord_down" ]]
+  exit
+fi
+echo "$url" >>"$SIM_VM/health.log" # app health check
+[[ -e "$SIM_VM/app_up" ]]
+EOF
+
+cat >"$FAKEBIN/fake_deploy" <<'EOF'
+#!/usr/bin/env bash
+echo "lock_held=${CS553_LOCK_HELD:-unset}" >>"$SIM_VM/deploy.log"
+if [[ -e "$SIM_VM/deploy_fails" ]]; then exit 6; fi
+touch "$SIM_VM/app_up"
 EOF
 chmod +x "$FAKEBIN"/*
 
@@ -90,7 +118,7 @@ reset_vm() { # reset_vm <authorized_keys content>
 run_relock() { # extra VAR=value args override the defaults
   local start=$SECONDS
   env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$HOMEDIR" SIM_VM="$VM" \
-    CONFIG="$T/no-such-config" \
+    CONFIG="$T/no-such-config" NOTIFY_RETRY_S=0 \
     MY_KEY="$KEYS/mine" SHARED_KEY="$KEYS/shared" AUTH_KEYS="$T/auth_keys" \
     "$@" bash "$RELOCK" >"$T/out.log" 2>&1
   RC=$?
@@ -268,6 +296,7 @@ ok=0
 check 11 rc_is 0 || ok=1
 check 11 vm_equals_file "$T/auth_keys" || ok=1
 check 11 grep -q 'POST_RELOCK_HOOK failed' "$T/out.log" || ok=1
+check 11 grep -q 'Discord notification failed twice' "$T/out.log" || ok=1
 finish_case "11 Discord down + failing hook -> relock still exit 0" $ok
 
 # 12. settings read from the CONFIG file (no env vars)
@@ -351,6 +380,148 @@ check 18 test "$(discord_count unreachable)" -eq 1 || ok=1
 run_relock DOWN_ALERT_AFTER_MIN=abc
 check 18 rc_is 3 || ok=1
 finish_case "18 DOWN_ALERT_AFTER_MIN honoured; invalid value -> exit 3" $ok
+
+# ---- app check (APP_CHECK_URL set, keys healthy) ---------------------------------------
+APP_STATE="$HOMEDIR/.cs553/relock.app"
+APP=(APP_CHECK_URL=http://app.test/ DEPLOY_CMD="$FAKEBIN/fake_deploy" DISCORD_WEBHOOK_URL=https://discord.invalid/webhook)
+healthy_vm() { reset_vm "$(cat "$T/auth_keys")"; mkdir -p "$HOMEDIR/.cs553"; }
+count() { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; echo "${n:-0}"; }
+set_app_state() { echo "$(($(date +%s) - $1)) $2 $3 $4" >"$APP_STATE"; } # <seconds ago> <action> <fails> <alerted>
+
+# 19. app up -> nothing to do
+healthy_vm
+touch "$VM/app_up"
+run_relock "${APP[@]}"
+ok=0
+check 19 rc_is 0 || ok=1
+check 19 grep -q 'app up' "$T/out.log" || ok=1
+check 19 only_probes || ok=1
+check 19 test ! -e "$VM/deploy.log" || ok=1
+finish_case "19 app up -> OK, no action" $ok
+
+# 20. app down, installed -> restart once, notify, remember it
+healthy_vm
+echo inactive >"$VM/app_state"
+run_relock "${APP[@]}"
+ok=0
+check 20 rc_is 0 || ok=1
+check 20 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 1 || ok=1
+check 20 discord_has 'restarted' || ok=1
+check 20 grep -qE '^[0-9]+ restart 1 0$' "$APP_STATE" || ok=1
+finish_case "20 app down (service stopped) -> restarted + Discord" $ok
+
+# 21. still down right after our restart -> wait (grace), no second restart
+run_relock "${APP[@]}"
+ok=0
+check 21 rc_is 0 || ok=1
+check 21 grep -q 'not answering yet' "$T/out.log" || ok=1
+check 21 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 1 || ok=1
+finish_case "21 within grace after restart -> wait, no repeat restart" $ok
+
+# 22. still down after grace -> escalate to redeploy (with the lock marked as held)
+set_app_state 200 restart 1 0
+run_relock "${APP[@]}"
+ok=0
+check 22 rc_is 0 || ok=1
+check 22 test "$(count 'lock_held=1' "$VM/deploy.log")" -eq 1 || ok=1
+check 22 discord_has 'redeploying' || ok=1
+check 22 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 1 || ok=1
+run_relock "${APP[@]}" # deploy brought it back
+check 22 grep -q 'healthy again' "$T/out.log" || ok=1
+check 22 test ! -e "$APP_STATE" || ok=1
+finish_case "22 still down after restart -> redeploy; next check healthy, state cleared" $ok
+
+# 23. app files missing -> redeploy straight away (no pointless restart)
+healthy_vm
+echo no >"$VM/app_files"
+run_relock "${APP[@]}"
+ok=0
+check 23 rc_is 0 || ok=1
+check 23 test "$(count 'lock_held=1' "$VM/deploy.log")" -eq 1 || ok=1
+check 23 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 0 || ok=1
+finish_case "23 app not installed -> redeploy directly" $ok
+
+# 24. redeploy keeps failing -> exit 6, ONE alert, backoff between attempts
+healthy_vm
+echo no >"$VM/app_files"
+touch "$VM/deploy_fails"
+run_relock "${APP[@]}"
+ok=0
+check 24 rc_is 6 || ok=1
+check 24 test "$(count 'FAILED' "$VM/discord.log")" -eq 1 || ok=1
+set_app_state 300 deploy 1 1 # past grace, inside the 10-min backoff
+run_relock "${APP[@]}"
+check 24 rc_is 6 || ok=1
+check 24 test "$(count 'lock_held' "$VM/deploy.log")" -eq 1 || ok=1
+set_app_state 700 deploy 1 1 # backoff over -> try again, but no second alert
+run_relock "${APP[@]}"
+check 24 rc_is 6 || ok=1
+check 24 test "$(count 'lock_held' "$VM/deploy.log")" -eq 2 || ok=1
+check 24 test "$(count 'FAILED' "$VM/discord.log")" -eq 1 || ok=1
+finish_case "24 redeploy failing -> exit 6, one alert, backoff respected" $ok
+
+# 25. ...and when it finally answers again -> one "healthy again" message
+rm "$VM/deploy_fails"
+touch "$VM/app_up"
+run_relock "${APP[@]}"
+ok=0
+check 25 rc_is 0 || ok=1
+check 25 test "$(count 'healthy again' "$VM/discord.log")" -eq 1 || ok=1
+check 25 test ! -e "$APP_STATE" || ok=1
+finish_case "25 recovery after alert -> one 'healthy again', state cleared" $ok
+
+# 26. systemd restarted it itself seconds ago (crash/reboot) -> let it load
+healthy_vm
+echo active >"$VM/app_state"
+echo 30 >"$VM/app_age"
+run_relock "${APP[@]}"
+ok=0
+check 26 rc_is 0 || ok=1
+check 26 grep -q 'still starting' "$T/out.log" || ok=1
+check 26 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 0 || ok=1
+check 26 test ! -e "$VM/deploy.log" || ok=1
+finish_case "26 service just (re)started by systemd -> wait, no action" $ok
+
+# 27. repeated failures -> escalation alert once, still redeploys
+healthy_vm
+set_app_state 700 deploy 2 0
+run_relock "${APP[@]}"
+ok=0
+check 27 rc_is 0 || ok=1
+check 27 discord_has 'still down after restart and redeploy' || ok=1
+check 27 test "$(count 'lock_held=1' "$VM/deploy.log")" -eq 1 || ok=1
+finish_case "27 still down after restart+redeploy -> escalation alert, redeploy" $ok
+
+# 28. after a relock the post-relock hook (deploy) runs with the lock marked as held
+reset_vm "$SHARED_LINE"
+run_relock POST_RELOCK_HOOK="echo \${CS553_LOCK_HELD:-unset} > '$VM/hook_env'"
+ok=0
+check 28 rc_is 0 || ok=1
+check 28 grep -qx 1 "$VM/hook_env" || ok=1
+finish_case "28 post-relock hook runs with CS553_LOCK_HELD=1" $ok
+
+# 29. app check off by default -> no health requests at all; bad APP_SERVICE -> exit 3
+healthy_vm
+run_relock
+ok=0
+check 29 rc_is 0 || ok=1
+check 29 test ! -e "$VM/health.log" || ok=1
+run_relock APP_CHECK_URL=http://app.test/ APP_SERVICE='x; rm -rf ~'
+check 29 rc_is 3 || ok=1
+finish_case "29 APP_CHECK_URL unset -> no app check; unsafe APP_SERVICE -> exit 3" $ok
+
+# 30. Discord hiccup -> the retry delivers the alert (yesterday's lost 30-min alert)
+reset_vm "$SHARED_LINE"
+touch "$VM/discord_flaky"
+run_relock DISCORD_WEBHOOK_URL=https://discord.invalid/webhook
+ok=0
+check 30 rc_is 0 || ok=1
+check 30 grep -q 'sent on retry' "$T/out.log" || ok=1
+check 30 discord_has 'wipe detected' || ok=1
+check 30 discord_has 'relock complete' || ok=1
+run_relock NOTIFY_RETRY_S=soon
+check 30 rc_is 3 || ok=1
+finish_case "30 Discord fails once -> retry delivers it; bad NOTIFY_RETRY_S -> exit 3" $ok
 
 echo
 echo "$PASSED passed, $FAILED failed"

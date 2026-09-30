@@ -17,8 +17,15 @@
 # Safety rule: the shared key is only removed after our key has been proven to work,
 # so a run that fails part-way can never lock us out; the next run just retries.
 #
-# Exit codes: 0 OK/relocked, 2 DOWN, 3 bad config, 4 our key still rejected after
-# append, 5 post-relock verification failed.
+# App check (only when APP_CHECK_URL is set, and only in the OK state): if the app doesn't
+# answer at APP_CHECK_URL, look at its systemd service over SSH and escalate:
+#   still starting (within APP_GRACE_S)        -> wait
+#   service present, first failure              -> sudo systemctl restart
+#   files missing, or still down after restart  -> DEPLOY_CMD (at most every DEPLOY_BACKOFF_MIN)
+# One Discord alert per failure streak, and one "healthy again" message when it recovers.
+#
+# Exit codes: 0 OK/relocked/app repaired, 2 DOWN, 3 bad config, 4 our key still rejected
+# after append, 5 post-relock verification failed, 6 app restart/redeploy failed.
 
 set -Eeuo pipefail
 
@@ -44,10 +51,22 @@ DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 POST_RELOCK_HOOK="${POST_RELOCK_HOOK:-}"
 DOWN_STATE_FILE="${DOWN_STATE_FILE:-$HOME/.cs553/relock.down}"
 DOWN_ALERT_AFTER_MIN="${DOWN_ALERT_AFTER_MIN:-30}"
+APP_CHECK_URL="${APP_CHECK_URL:-}" # empty = app check off
+APP_SERVICE="${APP_SERVICE:-prompt-enhancer}"
+DEPLOY_CMD="${DEPLOY_CMD:-$HOME/.cs553/deploy.sh}"
+APP_GRACE_S="${APP_GRACE_S:-180}"
+DEPLOY_BACKOFF_MIN="${DEPLOY_BACKOFF_MIN:-10}"
+APP_STATE_FILE="${APP_STATE_FILE:-$HOME/.cs553/relock.app}"
+NOTIFY_RETRY_S="${NOTIFY_RETRY_S:-5}"
 
 bad_config() { log ERROR "bad config: $1"; exit 3; }
 
 [[ "$DOWN_ALERT_AFTER_MIN" =~ ^[0-9]+$ ]] || bad_config "DOWN_ALERT_AFTER_MIN must be a whole number of minutes"
+[[ "$APP_GRACE_S" =~ ^[0-9]+$ ]] || bad_config "APP_GRACE_S must be a whole number of seconds"
+[[ "$DEPLOY_BACKOFF_MIN" =~ ^[0-9]+$ ]] || bad_config "DEPLOY_BACKOFF_MIN must be a whole number of minutes"
+[[ "$NOTIFY_RETRY_S" =~ ^[0-9]+$ ]] || bad_config "NOTIFY_RETRY_S must be a whole number of seconds"
+# APP_SERVICE is interpolated into remote commands, so keep it to a safe unit-name alphabet.
+[[ "$APP_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]] || bad_config "APP_SERVICE has unexpected characters"
 
 # Print the base64 key blob (2nd field) of a private key's public half, without ever
 # printing the private key. -P "" makes a passphrase-protected key fail instead of prompting.
@@ -106,14 +125,24 @@ can_login() { vm "$1" true </dev/null >/dev/null 2>&1; }
 REMOTE_APPEND='umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
 REMOTE_REPLACE='umask 077; mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys.new && mv ~/.ssh/authorized_keys.new ~/.ssh/authorized_keys'
 
+post_discord() { # post_discord <json payload>
+  curl -fsS -m 10 -H 'Content-Type: application/json' \
+    -d "$1" "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1
+}
+
 notify() {
   [[ -n "$DISCORD_WEBHOOK_URL" ]] || return 0
-  local msg="[group25] $1"
+  local msg="[group25] $1" payload
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
-  if ! curl -fsS -m 10 -H 'Content-Type: application/json' \
-    -d "{\"content\": \"$msg\"}" "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1; then
-    log WARN "Discord notification failed (ignored)"
+  payload="{\"content\": \"$msg\"}"
+  # One retry: a transient Discord/network hiccup once swallowed a 30-min DOWN alert.
+  if post_discord "$payload"; then return 0; fi
+  sleep "$NOTIFY_RETRY_S"
+  if post_discord "$payload"; then
+    log INFO "Discord notification sent on retry"
+  else
+    log WARN "Discord notification failed twice (ignored)"
   fi
 }
 
@@ -128,7 +157,9 @@ verify_and_finish() { # verify_and_finish <state>
     if [[ -n "$POST_RELOCK_HOOK" ]]; then
       log INFO "running POST_RELOCK_HOOK"
       # 9>&- : don't let the hook (or anything it backgrounds) keep holding our lock.
-      if bash -c "$POST_RELOCK_HOOK" 9>&-; then
+      # CS553_LOCK_HELD=1 : we hold the lock for the hook's whole run, so deploy.sh
+      # must not try to take it again.
+      if CS553_LOCK_HELD=1 bash -c "$POST_RELOCK_HOOK" 9>&-; then
         log INFO "POST_RELOCK_HOOK succeeded"
       else
         log WARN "POST_RELOCK_HOOK failed (exit $?); relock itself succeeded"
@@ -177,6 +208,114 @@ clear_down() {
   rm -f "$DOWN_STATE_FILE"
 }
 
+# ---- app check -------------------------------------------------------------------------
+# APP_STATE_FILE holds "<epoch of our last action> <restart|deploy> <failed fixes> <alerted 0|1>".
+# It exists only while the app is (or was just) unhealthy; a healthy check removes it.
+read_app_state() {
+  app_last=0 app_action=none app_fails=0 app_alerted=0
+  [[ -f "$APP_STATE_FILE" ]] || return 0
+  read -r app_last app_action app_fails app_alerted <"$APP_STATE_FILE" || true
+  if ! [[ "$app_last" =~ ^[0-9]+$ && "$app_fails" =~ ^[0-9]+$ && "$app_alerted" =~ ^[01]$ ]]; then
+    app_last=0 app_action=none app_fails=0 app_alerted=0
+  fi
+}
+
+write_app_state() { # write_app_state <epoch> <action> <fails> <alerted>
+  mkdir -p "$(dirname "$APP_STATE_FILE")"
+  echo "$1 $2 $3 $4" >"$APP_STATE_FILE"
+}
+
+app_answers() { curl -fsS -m 10 -o /dev/null "$APP_CHECK_URL" >/dev/null 2>&1; }
+
+# One SSH round trip: service state, whether the install exists, and how long the main
+# process has been running (0 when there is none).
+APP_PROBE="s=\$(systemctl is-active $APP_SERVICE 2>/dev/null); \
+p=\$(systemctl show -p MainPID --value $APP_SERVICE 2>/dev/null); \
+a=\$(ps -o etimes= -p \"\${p:-0}\" 2>/dev/null | tr -d ' '); \
+f=no; [ -x ~/app/.venv/bin/prompt-enhancer ] && [ -f /etc/systemd/system/$APP_SERVICE.service ] && f=yes; \
+echo \"state=\${s:-unknown} files=\$f age=\${a:-0}\""
+
+alert_once() { # alert_once <message>: first failure message of a streak only
+  if [[ "$app_alerted" == 0 ]]; then
+    notify "$1"
+    app_alerted=1
+  fi
+}
+
+check_app() {
+  local now age probe state files proc_age reason rc
+  read_app_state
+  if app_answers; then
+    if [[ -f "$APP_STATE_FILE" ]]; then
+      log INFO "app healthy again at $APP_CHECK_URL"
+      [[ "$app_alerted" == 1 ]] && notify "app on $HOST healthy again"
+      rm -f "$APP_STATE_FILE"
+    fi
+    log INFO "OK: our key works, shared key rejected; app up"
+    exit 0
+  fi
+
+  now="$(date +%s)"
+  age=$((now - app_last))
+  if ((app_last > 0 && age < APP_GRACE_S)); then
+    log INFO "OK: keys locked; app not answering yet (${app_action} ${age}s ago, grace ${APP_GRACE_S}s)"
+    exit 0
+  fi
+
+  if ! probe="$(vm "$MY_KEY" "$APP_PROBE" </dev/null 2>/dev/null)" ||
+    ! [[ "$probe" =~ state=([^[:space:]]+)\ files=(yes|no)\ age=([0-9]+) ]]; then
+    log ERROR "APP DOWN at $APP_CHECK_URL and the service probe over SSH failed"
+    exit 6
+  fi
+  state="${BASH_REMATCH[1]}" files="${BASH_REMATCH[2]}" proc_age="${BASH_REMATCH[3]}"
+
+  # systemd restarted it itself (crash, reboot) moments ago: give it time to load.
+  if [[ "$files" == yes && "$state" =~ ^(active|activating)$ ]] && ((proc_age < APP_GRACE_S)); then
+    log INFO "OK: keys locked; app process started ${proc_age}s ago, still starting"
+    exit 0
+  fi
+
+  if [[ "$files" == yes && "$app_fails" -eq 0 ]]; then
+    log WARN "APP DOWN at $APP_CHECK_URL (service $state); restarting $APP_SERVICE"
+    if vm "$MY_KEY" "sudo systemctl restart $APP_SERVICE" </dev/null >/dev/null 2>&1; then
+      write_app_state "$now" restart 1 "$app_alerted"
+      notify "app on $HOST was down (service $state) -> restarted"
+      exit 0
+    fi
+    log ERROR "restart of $APP_SERVICE failed"
+    alert_once "app on $HOST is down and restarting it FAILED; will redeploy"
+    write_app_state "$now" restart 1 "$app_alerted"
+    exit 6
+  fi
+
+  # Escalate to a full redeploy: install missing, or a restart didn't bring it back.
+  if [[ "$app_action" == deploy ]] && ((age < DEPLOY_BACKOFF_MIN * 60)); then
+    log WARN "APP DOWN; last redeploy ${age}s ago, next attempt after ${DEPLOY_BACKOFF_MIN} min"
+    exit 6
+  fi
+  if [[ "$files" == no ]]; then reason="app not installed"; else reason="still down after restart"; fi
+  if ((app_fails >= 2)); then
+    alert_once "app on $HOST still down after restart and redeploy; retrying every ${DEPLOY_BACKOFF_MIN} min. Check manually."
+  elif [[ "$app_alerted" == 0 ]]; then
+    notify "app on $HOST down ($reason) -> redeploying"
+  fi
+  log WARN "APP DOWN at $APP_CHECK_URL ($reason); running DEPLOY_CMD"
+  # Recorded before running, so a deploy that dies half-way still counts toward backoff.
+  write_app_state "$now" deploy $((app_fails + 1)) "$app_alerted"
+  if CS553_LOCK_HELD=1 bash -c "$DEPLOY_CMD" 9>&-; then
+    write_app_state "$(date +%s)" deploy $((app_fails + 1)) "$app_alerted"
+    log INFO "redeploy finished"
+    [[ "$app_alerted" == 1 ]] || notify "redeploy on $HOST finished; app healthy"
+    exit 0
+  else
+    rc=$?
+    log ERROR "redeploy failed (exit $rc); next attempt after ${DEPLOY_BACKOFF_MIN} min"
+    alert_once "redeploy on $HOST FAILED (exit $rc); retrying every ${DEPLOY_BACKOFF_MIN} min. Check manually."
+    write_app_state "$now" deploy $((app_fails + 1)) "$app_alerted"
+    exit 6
+  fi
+}
+
 # ---- main ------------------------------------------------------------------------------
 
 ours=rejected shared=rejected
@@ -188,6 +327,9 @@ can_login "$SHARED_KEY" && shared=works
 
 case "$ours/$shared" in
   works/rejected)
+    if [[ -n "$APP_CHECK_URL" ]]; then
+      check_app
+    fi
     log INFO "OK: our key works, shared key rejected"
     exit 0
     ;;
