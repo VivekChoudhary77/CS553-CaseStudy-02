@@ -227,13 +227,15 @@ write_app_state() { # write_app_state <epoch> <action> <fails> <alerted>
 
 app_answers() { curl -fsS -m 10 -o /dev/null "$APP_CHECK_URL" >/dev/null 2>&1; }
 
-# One SSH round trip: service state, whether the install exists, and how long the main
-# process has been running (0 when there is none).
+# One SSH round trip: service state, whether the install exists, and how long ago the
+# service became active. The age comes from systemd's wall-clock ActiveEnterTimestamp:
+# inside the LXD VM `ps -o etimes` is always 0 (container uptime vs host boot time).
 APP_PROBE="s=\$(systemctl is-active $APP_SERVICE 2>/dev/null); \
-p=\$(systemctl show -p MainPID --value $APP_SERVICE 2>/dev/null); \
-a=\$(ps -o etimes= -p \"\${p:-0}\" 2>/dev/null | tr -d ' '); \
-f=no; [ -x ~/app/.venv/bin/prompt-enhancer ] && [ -f /etc/systemd/system/$APP_SERVICE.service ] && f=yes; \
-echo \"state=\${s:-unknown} files=\$f age=\${a:-0}\""
+t=\$(systemctl show -p ActiveEnterTimestamp --value $APP_SERVICE 2>/dev/null); \
+a=0; [ -n \"\$t\" ] && a=\$(( \$(date +%s) - \$(date -d \"\$t\" +%s 2>/dev/null || date +%s) )); \
+[ \"\$a\" -ge 0 ] 2>/dev/null || a=0; \
+f=no; [ -x ~/app/.venv/bin/prompt-enhancer ] && systemctl cat $APP_SERVICE >/dev/null 2>&1 && f=yes; \
+echo \"state=\${s:-unknown} files=\$f age=\$a\""
 
 alert_once() { # alert_once <message>: first failure message of a streak only
   if [[ "$app_alerted" == 0 ]]; then
@@ -269,7 +271,7 @@ check_app() {
   fi
   state="${BASH_REMATCH[1]}" files="${BASH_REMATCH[2]}" proc_age="${BASH_REMATCH[3]}"
 
-  # systemd restarted it itself (crash, reboot) moments ago: give it time to load.
+  # systemd (re)started it moments ago (crash, reboot, manual restart): give it time to load.
   if [[ "$files" == yes && "$state" =~ ^(active|activating)$ ]] && ((proc_age < APP_GRACE_S)); then
     log INFO "OK: keys locked; app process started ${proc_age}s ago, still starting"
     exit 0

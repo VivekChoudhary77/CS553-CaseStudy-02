@@ -48,8 +48,14 @@ case "$cmd" in
   *'>>'*) # append
     if [[ -e "$SIM_VM/append_broken" ]]; then cat >/dev/null; exit 0; fi # "succeeds" but has no effect
     cat >>"$auth" ;;
-  *'state='*) # app service probe
-    echo "state=$(cat "$SIM_VM/app_state" 2>/dev/null || echo inactive) files=$(cat "$SIM_VM/app_files" 2>/dev/null || echo yes) age=$(cat "$SIM_VM/app_age" 2>/dev/null || echo 0)" ;;
+  *'state='*) # app service probe: run the real probe against fake systemctl + a fake VM home
+    vmhome="$SIM_VM/vmhome"
+    rm -rf "$vmhome" && mkdir -p "$vmhome"
+    if [[ "$(cat "$SIM_VM/app_files" 2>/dev/null || echo yes)" == yes ]]; then
+      mkdir -p "$vmhome/app/.venv/bin" && : >"$vmhome/app/.venv/bin/prompt-enhancer"
+      chmod +x "$vmhome/app/.venv/bin/prompt-enhancer"
+    fi
+    HOME="$vmhome" bash -c "$cmd" ;;
   *'systemctl restart'*)
     if [[ -e "$SIM_VM/restart_fails" ]]; then exit 1; fi
     if [[ -e "$SIM_VM/restart_heals" ]]; then touch "$SIM_VM/app_up"; fi ;;
@@ -88,6 +94,15 @@ if [[ -n "$data" ]]; then # Discord webhook post
 fi
 echo "$url" >>"$SIM_VM/health.log" # app health check
 [[ -e "$SIM_VM/app_up" ]]
+EOF
+
+cat >"$FAKEBIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  is-active) cat "$SIM_VM/app_state" 2>/dev/null || echo inactive ;;
+  show) cat "$SIM_VM/app_since" 2>/dev/null ;; # ActiveEnterTimestamp, systemd's format
+  cat) [[ "$(cat "$SIM_VM/app_files" 2>/dev/null || echo yes)" == yes ]] ;;
+esac
 EOF
 
 cat >"$FAKEBIN/fake_deploy" <<'EOF'
@@ -386,6 +401,7 @@ APP_STATE="$HOMEDIR/.cs553/relock.app"
 APP=(APP_CHECK_URL=http://app.test/ DEPLOY_CMD="$FAKEBIN/fake_deploy" DISCORD_WEBHOOK_URL=https://discord.invalid/webhook)
 healthy_vm() { reset_vm "$(cat "$T/auth_keys")"; mkdir -p "$HOMEDIR/.cs553"; }
 count() { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; echo "${n:-0}"; }
+since() { date -u -d "@$(($(date +%s) - $1))" '+%a %Y-%m-%d %H:%M:%S UTC'; } # <seconds ago>
 set_app_state() { echo "$(($(date +%s) - $1)) $2 $3 $4" >"$APP_STATE"; } # <seconds ago> <action> <fails> <alerted>
 
 # 19. app up -> nothing to do
@@ -473,7 +489,7 @@ finish_case "25 recovery after alert -> one 'healthy again', state cleared" $ok
 # 26. systemd restarted it itself seconds ago (crash/reboot) -> let it load
 healthy_vm
 echo active >"$VM/app_state"
-echo 30 >"$VM/app_age"
+since 30 >"$VM/app_since"
 run_relock "${APP[@]}"
 ok=0
 check 26 rc_is 0 || ok=1
@@ -522,6 +538,18 @@ check 30 discord_has 'relock complete' || ok=1
 run_relock NOTIFY_RETRY_S=soon
 check 30 rc_is 3 || ok=1
 finish_case "30 Discord fails once -> retry delivers it; bad NOTIFY_RETRY_S -> exit 3" $ok
+
+# 31. app HUNG: service "active" for 10 min but not answering -> restart (this is what
+#     `ps -o etimes`, always 0 inside the LXD VM, would have masked as "still starting")
+healthy_vm
+echo active >"$VM/app_state"
+since 600 >"$VM/app_since"
+run_relock "${APP[@]}"
+ok=0
+check 31 rc_is 0 || ok=1
+check 31 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 1 || ok=1
+check 31 discord_has 'restarted' || ok=1
+finish_case "31 app hung (active 10 min, not answering) -> restarted" $ok
 
 echo
 echo "$PASSED passed, $FAILED failed"
