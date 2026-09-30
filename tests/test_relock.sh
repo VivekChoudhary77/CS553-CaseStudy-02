@@ -190,6 +190,7 @@ check 1 vm_equals_file "$T/auth_keys" || ok=1
 check 1 discord_has 'wipe detected' || ok=1
 check 1 discord_has 'relock complete' || ok=1
 check 1 test -e "$VM/hook_ran" || ok=1
+check 1 discord_has 'app redeployed after RELOCK' || ok=1
 check 1 append_used_shared_key || ok=1
 check 1 replace_used_our_key || ok=1
 finish_case "1 wiped (only shared) -> relocked to exactly AUTH_KEYS" $ok
@@ -550,6 +551,18 @@ check 31 rc_is 0 || ok=1
 check 31 test "$(count 'systemctl restart' "$VM/calls.log")" -eq 1 || ok=1
 check 31 discord_has 'restarted' || ok=1
 finish_case "31 app hung (active 10 min, not answering) -> restarted" $ok
+
+# 32. redeploy after a wipe FAILS -> Discord says so (and that the app check will retry)
+reset_vm "$SHARED_LINE"
+run_relock DISCORD_WEBHOOK_URL=https://discord.invalid/webhook POST_RELOCK_HOOK="exit 6" \
+  APP_CHECK_URL=http://app.test/
+ok=0
+check 32 rc_is 0 || ok=1
+check 32 vm_equals_file "$T/auth_keys" || ok=1
+check 32 discord_has 'redeploy after RELOCK' || ok=1
+check 32 discord_has 'FAILED (exit 6); the app check will retry' || ok=1
+check 32 test "$(count 'app redeployed' "$VM/discord.log")" -eq 0 || ok=1
+finish_case "32 post-wipe redeploy fails -> relock still OK, Discord reports the failure" $ok
 
 echo
 echo "$PASSED passed, $FAILED failed"

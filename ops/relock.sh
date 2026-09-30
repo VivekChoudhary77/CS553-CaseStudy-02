@@ -161,8 +161,12 @@ verify_and_finish() { # verify_and_finish <state>
       # must not try to take it again.
       if CS553_LOCK_HELD=1 bash -c "$POST_RELOCK_HOOK" 9>&-; then
         log INFO "POST_RELOCK_HOOK succeeded"
+        notify "app redeployed after $1 on $HOST; healthy"
       else
-        log WARN "POST_RELOCK_HOOK failed (exit $?); relock itself succeeded"
+        local rc=$? next="check the relock log"
+        [[ -n "$APP_CHECK_URL" ]] && next="the app check will retry"
+        log WARN "POST_RELOCK_HOOK failed (exit $rc); relock itself succeeded"
+        notify "redeploy after $1 on $HOST FAILED (exit $rc); $next"
       fi
     fi
     exit 0
