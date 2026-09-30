@@ -17,6 +17,12 @@
 # Safety rule: the shared key is only removed after our key has been proven to work,
 # so a run that fails part-way can never lock us out; the next run just retries.
 #
+# The shared-key probe is a login that is REJECTED by design. Repeating it every run looked
+# like SSH brute force to WPI's firewall, which then blocked linux.wpi.edu for an hour
+# (twice). So while our key works it is probed only every SHARED_CHECK_MIN minutes, or at
+# once if it worked last time; a wipe is still caught immediately because it makes OUR key
+# fail, and then the shared key is always probed.
+#
 # App check (only when APP_CHECK_URL is set, and only in the OK state): if the app doesn't
 # answer at APP_CHECK_URL, look at its systemd service over SSH and escalate:
 #   still starting (within APP_GRACE_S)        -> wait
@@ -58,6 +64,8 @@ APP_GRACE_S="${APP_GRACE_S:-180}"
 DEPLOY_BACKOFF_MIN="${DEPLOY_BACKOFF_MIN:-10}"
 APP_STATE_FILE="${APP_STATE_FILE:-$HOME/.cs553/relock.app}"
 NOTIFY_RETRY_S="${NOTIFY_RETRY_S:-5}"
+SHARED_CHECK_MIN="${SHARED_CHECK_MIN:-10}"
+SHARED_STATE_FILE="${SHARED_STATE_FILE:-$HOME/.cs553/relock.shared}"
 
 bad_config() { log ERROR "bad config: $1"; exit 3; }
 
@@ -65,6 +73,7 @@ bad_config() { log ERROR "bad config: $1"; exit 3; }
 [[ "$APP_GRACE_S" =~ ^[0-9]+$ ]] || bad_config "APP_GRACE_S must be a whole number of seconds"
 [[ "$DEPLOY_BACKOFF_MIN" =~ ^[0-9]+$ ]] || bad_config "DEPLOY_BACKOFF_MIN must be a whole number of minutes"
 [[ "$NOTIFY_RETRY_S" =~ ^[0-9]+$ ]] || bad_config "NOTIFY_RETRY_S must be a whole number of seconds"
+[[ "$SHARED_CHECK_MIN" =~ ^[0-9]+$ ]] || bad_config "SHARED_CHECK_MIN must be a whole number of minutes"
 # APP_SERVICE is interpolated into remote commands, so keep it to a safe unit-name alphabet.
 [[ "$APP_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]] || bad_config "APP_SERVICE has unexpected characters"
 
@@ -122,6 +131,22 @@ vm() { # vm <private key> <remote command>   (stdin is forwarded)
 
 can_login() { vm "$1" true </dev/null >/dev/null 2>&1; }
 
+# SHARED_STATE_FILE holds "<epoch of last shared-key probe> <works|rejected>".
+shared_login() {
+  local result=rejected rc=1
+  if can_login "$SHARED_KEY"; then result=works rc=0; fi
+  mkdir -p "$(dirname "$SHARED_STATE_FILE")"
+  echo "$(date +%s) $result" >"$SHARED_STATE_FILE"
+  return "$rc"
+}
+
+shared_check_due() {
+  local last=0 result=""
+  [[ -f "$SHARED_STATE_FILE" ]] && read -r last result <"$SHARED_STATE_FILE" || true
+  [[ "$last" =~ ^[0-9]+$ && "$result" == rejected ]] || return 0 # unknown, or it worked last time
+  (($(date +%s) - last >= SHARED_CHECK_MIN * 60))
+}
+
 REMOTE_APPEND='umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
 REMOTE_REPLACE='umask 077; mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys.new && mv ~/.ssh/authorized_keys.new ~/.ssh/authorized_keys'
 
@@ -151,7 +176,7 @@ replace_with_our_key() {
 }
 
 verify_and_finish() { # verify_and_finish <state>
-  if can_login "$MY_KEY" && ! can_login "$SHARED_KEY"; then
+  if can_login "$MY_KEY" && ! shared_login; then
     log INFO "$1 complete: our key works, shared key rejected"
     notify "relock complete ($1) on $HOST: our key works, shared key rejected"
     if [[ -n "$POST_RELOCK_HOOK" ]]; then
@@ -326,13 +351,17 @@ check_app() {
 
 ours=rejected shared=rejected
 can_login "$MY_KEY" && ours=works
-can_login "$SHARED_KEY" && shared=works
+if [[ "$ours" == rejected ]] || shared_check_due; then
+  shared_login && shared=works
+else
+  shared=skipped # our key works and the shared key was rejected recently
+fi
 
 # Any key working means the VM is reachable again: close out a DOWN period.
 [[ "$ours/$shared" == rejected/rejected ]] || clear_down
 
 case "$ours/$shared" in
-  works/rejected)
+  works/rejected | works/skipped)
     if [[ -n "$APP_CHECK_URL" ]]; then
       check_app
     fi

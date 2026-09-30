@@ -564,6 +564,59 @@ check 32 discord_has 'FAILED (exit 6); the app check will retry' || ok=1
 check 32 test "$(count 'app redeployed' "$VM/discord.log")" -eq 0 || ok=1
 finish_case "32 post-wipe redeploy fails -> relock still OK, Discord reports the failure" $ok
 
+# ---- class-key probe throttling (the probe is a deliberately failing login) -----------------
+SHARED_STATE="$HOMEDIR/.cs553/relock.shared"
+shared_attempts() { grep -c '^shared ::' "$VM/calls.log" || true; }
+
+# 33. healthy and class key rejected recently -> NO class-key login attempt at all
+reset_vm "$(cat "$T/auth_keys")"
+run_relock
+ok=0
+check 33 rc_is 0 || ok=1
+check 33 test "$(shared_attempts)" -eq 1 || ok=1 # first run: no state yet, so it checks once
+check 33 grep -qE '^[0-9]+ rejected$' "$SHARED_STATE" || ok=1
+: >"$VM/calls.log"
+run_relock
+check 33 rc_is 0 || ok=1
+check 33 test "$(shared_attempts)" -eq 0 || ok=1
+check 33 grep -q 'OK: our key works' "$T/out.log" || ok=1
+finish_case "33 healthy -> class key probed once, then skipped (no failed logins)" $ok
+
+# 34. last class-key check older than SHARED_CHECK_MIN -> probe again (and ENFORCE if it works)
+reset_vm "$(cat "$T/auth_keys")
+$SHARED_LINE"
+mkdir -p "$HOMEDIR/.cs553"
+echo "$(($(date +%s) - 11 * 60)) rejected" >"$SHARED_STATE"
+run_relock
+ok=0
+check 34 rc_is 0 || ok=1
+check 34 vm_equals_file "$T/auth_keys" || ok=1
+check 34 grep -q ENFORCE "$T/out.log" || ok=1
+finish_case "34 periodic class-key check (every 10 min) still catches a re-added class key" $ok
+
+# 35. a wipe is caught immediately even right after a class-key check
+reset_vm "$SHARED_LINE"
+mkdir -p "$HOMEDIR/.cs553"
+echo "$(date +%s) rejected" >"$SHARED_STATE"
+run_relock
+ok=0
+check 35 rc_is 0 || ok=1
+check 35 vm_equals_file "$T/auth_keys" || ok=1
+check 35 grep -q 'RELOCK' "$T/out.log" || ok=1
+finish_case "35 wipe right after a class-key check -> still relocked immediately" $ok
+
+# 36. class key worked last time -> re-check every run until it is rejected again
+reset_vm "$(cat "$T/auth_keys")"
+mkdir -p "$HOMEDIR/.cs553"
+echo "$(date +%s) works" >"$SHARED_STATE"
+run_relock
+ok=0
+check 36 test "$(shared_attempts)" -eq 1 || ok=1
+check 36 grep -qE '^[0-9]+ rejected$' "$SHARED_STATE" || ok=1
+run_relock SHARED_CHECK_MIN=x
+check 36 rc_is 3 || ok=1
+finish_case "36 class key worked last time -> re-checked at once; bad SHARED_CHECK_MIN -> exit 3" $ok
+
 echo
 echo "$PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]
