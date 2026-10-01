@@ -34,6 +34,15 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 7860
     log_level: str = "INFO"
+    # resource monitor (bonus: monitoring + adaptive response)
+    monitor_enabled: bool = True
+    monitor_interval_s: float = 5.0
+    cpu_high_pct: float = 80.0
+    mem_high_pct: float = 85.0
+    monitor_trigger_samples: int = 4
+    monitor_clear_samples: int = 6
+    monitor_clear_margin_pct: float = 10.0
+    discord_webhook_url: str = ""
 
     @property
     def gemini_models(self) -> list[str]:
@@ -77,6 +86,25 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    if value:
+        log.warning("Invalid %s; using default %s", name, default)
+    return default
+
+
+def _positive(name: str, default: float) -> float:
+    value = _float(name, default)
+    if value <= 0:
+        log.warning("%s must be positive; using default %s", name, default)
+        return default
+    return value
+
+
 def load_settings(env_file: str | Path | None = ".env") -> Settings:
     """Build Settings from the environment. Pass env_file=None to skip reading a .env file."""
     if env_file is not None:
@@ -98,6 +126,14 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         host=_str("HOST", "0.0.0.0"),
         port=_int("PORT", 7860),
         log_level=_str("LOG_LEVEL", "INFO").upper(),
+        monitor_enabled=_bool("MONITOR_ENABLED", True),
+        monitor_interval_s=_positive("MONITOR_INTERVAL_S", 5.0),
+        cpu_high_pct=_positive("CPU_HIGH_PCT", 80.0),
+        mem_high_pct=_positive("MEM_HIGH_PCT", 85.0),
+        monitor_trigger_samples=max(1, _int("MONITOR_TRIGGER_SAMPLES", 4)),
+        monitor_clear_samples=max(1, _int("MONITOR_CLEAR_SAMPLES", 6)),
+        monitor_clear_margin_pct=max(0.0, _float("MONITOR_CLEAR_MARGIN_PCT", 10.0)),
+        discord_webhook_url=_str("DISCORD_WEBHOOK_URL", ""),
     )
 
 

@@ -10,6 +10,9 @@ ENV_VARS = [
     "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_REASONING_EFFORT",
     "LOCAL_MODEL_ID", "LOCAL_NUM_THREADS", "LOCAL_MAX_TIME_S", "API_TIMEOUT_S",
     "HOST", "PORT", "LOG_LEVEL",
+    "MONITOR_ENABLED", "MONITOR_INTERVAL_S", "CPU_HIGH_PCT", "MEM_HIGH_PCT",
+    "MONITOR_TRIGGER_SAMPLES", "MONITOR_CLEAR_SAMPLES", "MONITOR_CLEAR_MARGIN_PCT",
+    "DISCORD_WEBHOOK_URL",
 ]
 
 
@@ -106,3 +109,39 @@ def test_gemini_without_models_is_one_unconfigured_backend(clean_env):
     backends = build_gemini_backends(load_settings(env_file=None))
     assert len(backends) == 1
     assert backends[0].availability() == (False, "not configured")
+
+
+def test_monitor_defaults(clean_env):
+    s = load_settings(env_file=None)
+    assert s.monitor_enabled is True
+    assert (s.monitor_interval_s, s.cpu_high_pct, s.mem_high_pct) == (5.0, 80.0, 85.0)
+    assert (s.monitor_trigger_samples, s.monitor_clear_samples) == (4, 6)
+    assert s.monitor_clear_margin_pct == 10.0
+    assert s.discord_webhook_url == ""
+
+
+def test_monitor_settings_from_env(clean_env):
+    clean_env.setenv("MONITOR_ENABLED", "false")
+    clean_env.setenv("CPU_HIGH_PCT", "20")
+    clean_env.setenv("MEM_HIGH_PCT", "10.5")
+    clean_env.setenv("MONITOR_TRIGGER_SAMPLES", "2")
+    s = load_settings(env_file=None)
+    assert s.monitor_enabled is False
+    assert (s.cpu_high_pct, s.mem_high_pct, s.monitor_trigger_samples) == (20.0, 10.5, 2)
+
+
+def test_bad_monitor_values_fall_back_to_defaults(clean_env):
+    clean_env.setenv("MONITOR_ENABLED", "maybe")
+    clean_env.setenv("CPU_HIGH_PCT", "high")
+    clean_env.setenv("MONITOR_INTERVAL_S", "0")
+    clean_env.setenv("MONITOR_TRIGGER_SAMPLES", "0")
+    s = load_settings(env_file=None)
+    assert s.monitor_enabled is True
+    assert s.cpu_high_pct == 80.0
+    assert s.monitor_interval_s == 5.0
+    assert s.monitor_trigger_samples == 1
+
+
+def test_repr_never_contains_the_webhook(clean_env):
+    clean_env.setenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1/secret-token")
+    assert "secret-token" not in repr(load_settings(env_file=None))

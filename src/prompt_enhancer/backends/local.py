@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from prompt_enhancer.backends.base import (
@@ -24,6 +25,7 @@ log = logging.getLogger(__name__)
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
+PAUSED_REASON = "paused: system near capacity"
 
 
 def build_generation_kwargs(
@@ -63,6 +65,7 @@ class LocalBackend(Backend):
         self._load_thread: threading.Thread | None = None
         self._model: Any = None
         self._tokenizer: Any = None
+        self._pause_check: Callable[[], bool] | None = None
 
     # ---- loading -------------------------------------------------------------------
 
@@ -111,9 +114,17 @@ class LocalBackend(Backend):
 
     # ---- Backend interface ---------------------------------------------------------
 
+    def set_pause_check(self, check: Callable[[], bool] | None) -> None:
+        """While `check()` is true the backend reports itself unavailable (resource monitor)."""
+        self._pause_check = check
+
     def availability(self) -> tuple[bool, str]:
         status = self.status
         if status == STATUS_READY:
+            # CPU-bound generation is the heaviest thing this app does: skip it under load,
+            # so the router falls through to the API backends.
+            if self._pause_check is not None and self._pause_check():
+                return False, PAUSED_REASON
             return True, "ok"
         if status == STATUS_LOADING:
             return False, "model still loading"

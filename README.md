@@ -34,6 +34,8 @@ src/prompt_enhancer/
 ├── config.py         .env loading, Settings dataclass, logging setup
 ├── prompts.py        system prompt, Short/Medium/Long presets, output clean-up
 ├── router.py         failover logic (no gradio import)
+├── monitor.py        CPU/memory sampling + busy/normal decision
+├── notifier.py       Discord webhook notifications
 └── backends/
     ├── base.py           Backend interface, BackendError, Attempt/EnhanceResult
     ├── openai_compat.py  OpenAI-compatible client + error mapping (used by OpenRouter)
@@ -118,6 +120,52 @@ You can override variables for a single run on the command line without editing 
    `GEMINI_API_KEY= OPENROUTER_MODEL=bogus/model uv run prompt-enhancer`. Gemini and OpenRouter both fail and Local answers. The trace shows the whole chain.
 3. **Local still loading → Gemini.** Select **Local** and click Enhance in the first few seconds after startup, while the status line still shows ⏳ loading. The request falls through to Gemini.
 4. **Everything fails.** Break both remote backends and select **Local** while it is still loading. An error toast lists each backend with its reason.
+
+## Resource monitoring and adaptive response
+
+The app watches the machine it runs on and reduces its own load when the machine is near capacity.
+
+**How usage is measured.** A background thread in the app (`src/prompt_enhancer/monitor.py`) takes a sample every `MONITOR_INTERVAL_S` seconds (default 5):
+- **CPU %:** from the aggregate `cpu` line of `/proc/stat`. It is the share of time, since the previous sample, that was not idle or waiting for I/O.
+- **Memory %:** from `/proc/meminfo`, as `1 - MemAvailable / MemTotal`. File cache that the kernel can release counts as available.
+
+No extra package or service is needed. On the 4 GiB VM with the local model loaded, memory sits at about 60%.
+
+**Thresholds.**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CPU_HIGH_PCT` | `80` | CPU threshold |
+| `MEM_HIGH_PCT` | `85` | memory threshold |
+| `MONITOR_TRIGGER_SAMPLES` | `4` | samples in a row at or above a threshold before the app goes busy (20 s), so one short spike or one ordinary local request does not trigger it |
+| `MONITOR_CLEAR_SAMPLES` | `6` | samples in a row below the clear level before the app returns to normal (30 s) |
+| `MONITOR_CLEAR_MARGIN_PCT` | `10` | the clear level is this far below each threshold (CPU under 70%, memory under 75%), so the mode does not flip back and forth at the edge |
+| `MONITOR_ENABLED` | `true` | set to `false` to switch the monitor off |
+
+**What happens when a threshold is crossed.** The app enters **busy** mode and does three things:
+1. **Notifies the team.** It posts to the Discord webhook in `DISCORD_WEBHOOK_URL`, for example:
+   `[group25] resource alert on group25: CPU 97% / memory 62% (thresholds 80% / 85%) -> local model paused`
+2. **Reduces the workload.** The local model, which is the CPU-heavy part, is paused. The Local backend reports `paused: system near capacity`, so the failover router skips it and sends the request to Gemini or OpenRouter. The warning toast and the fallback trace show the reason:
+   `Local ❌ paused: system near capacity → Gemini ✅ 4.0 s`
+3. **Tells the user.** The page shows `Mode: busy` and a "System near capacity" banner.
+
+If Gemini and OpenRouter both fail while the app is busy, the request fails with an error that lists each reason.
+
+**How it returns to normal.** When CPU and memory both stay below the clear level for `MONITOR_CLEAR_SAMPLES` samples, the app leaves busy mode. The local model is available again, the banner disappears, and Discord gets:
+`[group25] resources back to normal on group25: CPU 12% / memory 60% -> local model resumed`
+
+Notifications are sent only on a change of mode, never on every sample.
+
+**Where to see it.** The page shows a live line (`System: CPU 42% · Memory 61% · Mode: normal`) and a chart of the last 10 minutes.
+
+**How to demo it.** Create real CPU load on the VM for a minute with two busy loops, one per CPU:
+
+```bash
+timeout 60 sh -c 'while :; do :; done' &
+timeout 60 sh -c 'while :; do :; done' &
+```
+
+After about 20 s the alert arrives and the page shows busy mode. A request with Local selected is then served by Gemini. About 30 s after the loops end, the app returns to normal. For a quicker test, lower a threshold instead, e.g. `MEM_HIGH_PCT=10`.
 
 ## Resource notes
 

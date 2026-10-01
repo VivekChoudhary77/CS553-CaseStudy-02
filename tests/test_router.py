@@ -217,3 +217,17 @@ def test_single_model_label_has_no_model_suffix():
     group = gemini_group(("only", {"error": BackendError("HTTP 503")}))
     result = enhance("hi", "Gemini", "Short", 0.7, make_backends(Gemini=group))
     assert result.attempts[0].display == "Gemini"
+
+
+def test_paused_local_is_skipped_with_its_reason_and_api_backend_serves():
+    """Resource monitor reaction: a paused Local backend reports itself unavailable."""
+    reason = "paused: system near capacity"
+    backends = make_backends(Local=FakeBackend("Local", local=True, available=False, reason=reason))
+    events = []
+    result = enhance("hi", "Local", "Short", 0.7, backends, on_event=lambda *a: events.append(a))
+    assert result.backend == "Gemini"
+    assert result.attempts[0].reason == reason
+    assert result.attempts[0].latency_s < 0.05
+    assert not backends["Local"].calls
+    assert format_trace(result.attempts).startswith(f"Local ❌ {reason} → Gemini ✅")
+    assert events[0][2] == "Gemini"
