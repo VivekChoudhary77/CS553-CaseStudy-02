@@ -1,3 +1,7 @@
+# Used Opus 5.5 with High Effort, for the tests of the Discord notifier.
+# prompt: Write pytest tests for the notifier with a fake opener: the JSON payload and headers,
+#   one retry, never raising, no request without a URL, and the URL never being logged.
+
 import json
 import urllib.error
 

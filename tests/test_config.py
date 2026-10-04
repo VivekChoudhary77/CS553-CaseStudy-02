@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the tests of the settings loader.
+# prompt: Write pytest tests for the settings: the defaults, missing keys making a backend
+#   unavailable without an error, bad numbers falling back to the default, the Gemini model list,
+#   the monitor settings, and keys never appearing in repr().
+
 import pytest
 
 from prompt_enhancer.backends.gemini import GeminiBackend

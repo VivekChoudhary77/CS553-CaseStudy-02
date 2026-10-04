@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Used Opus 5.5 with High Effort, for the local tests of the deploy scripts.
+# prompt: Write local tests that run remote_install.sh in a temporary home with fake sudo,
+#   systemctl, git, uv and curl, and test deploy.sh with a fake ssh: a fresh install, an identical
+#   re-run, a settings or code change, an unhealthy app, bad settings, and secrets being sent only
+#   over stdin.
 # Local tests for ops/remote_install.sh and ops/deploy.sh — no network, no VM, no sudo.
 #
 # remote_install.sh runs for real in a temp HOME, with fake sudo/systemctl/apt-get/git/uv/

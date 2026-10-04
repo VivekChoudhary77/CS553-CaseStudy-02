@@ -1,3 +1,7 @@
+# Used Opus 5.5 with High Effort, for a quick health check of every backend.
+# prompt: Write a smoke test that sends a tiny prompt to each configured backend and each Gemini
+#   model, prints the status, reason and latency, and exits non-zero if none of them succeeds.
+
 """Call each configured backend once with a tiny prompt; exit non-zero if none succeed.
 
 Usage: uv run python scripts/smoke_test.py [--skip-local]

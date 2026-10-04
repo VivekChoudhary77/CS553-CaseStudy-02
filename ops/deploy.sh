@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Used Opus 5.5 with High Effort, for the script that deploys the app to the VM.
+# prompt: Write an idempotent deploy script that checks the app's settings file, uploads it to the
+#   VM over SSH stdin so secrets never appear on a command line, then streams remote_install.sh to
+#   the VM. Share the watchdog's config and lock and return clear exit codes.
 # deploy.sh — install or update Prompt Enhancer on the VM (CS553 group 25). Idempotent.
 #
 # Runs on linux.wpi.edu (by hand, or from relock.sh after a relock / when the app is

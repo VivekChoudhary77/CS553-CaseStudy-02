@@ -1,3 +1,7 @@
+# Used Opus 5.5 with High Effort, for a script that downloads the local model ahead of time.
+# prompt: Write a script that downloads LOCAL_MODEL_ID into the Hugging Face cache and prints the
+#   path, the size and the elapsed time.
+
 """Pre-fetch LOCAL_MODEL_ID into the Hugging Face cache (respects HF_HOME).
 
 Usage: uv run python scripts/download_model.py

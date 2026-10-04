@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the tests that API errors become readable reasons.
+# prompt: Write pytest tests that openai exceptions and Gemini HTTP errors are mapped to the right
+#   short reasons, and that the Gemini request body and response parsing are correct, including
+#   blocked replies.
+
 import httpx2
 import openai
 import pytest

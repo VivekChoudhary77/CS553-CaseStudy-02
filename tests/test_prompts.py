@@ -1,3 +1,7 @@
+# Used Opus 5.5 with High Effort, for the tests of the length presets and the output clean-up.
+# prompt: Write pytest tests that check each length preset returns the right instruction and token
+#   caps, and that the clean-up removes code fences, 'Here is...' preambles and wrapping quotes.
+
 import pytest
 
 from prompt_enhancer.prompts import (

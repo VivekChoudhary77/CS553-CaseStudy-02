@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Used Opus 5.5 with High Effort, for the local tests of the watchdog.
+# prompt: Write local simulation tests for relock.sh with fake ssh, ssh-keygen and curl first on
+#   PATH and a text file as the VM's authorized_keys. Cover the wiped, healthy, enforce, down,
+#   failed-append, empty-key-list and lock-held cases, plus the app check, and print PASS or FAIL
+#   for each case.
 # Local simulation tests for ops/relock.sh — no network, no real keys.
 #
 # Fake `ssh`, `ssh-keygen` and `curl` executables go first on PATH. The "VM" is a

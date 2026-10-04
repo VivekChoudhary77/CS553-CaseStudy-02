@@ -1,3 +1,9 @@
+# Used Opus 5.5 with High Effort, for loading the app's settings from environment variables and a
+#   .env file.
+# prompt: Create a frozen Settings dataclass loaded with python-dotenv, with a default for every
+#   variable. Missing API keys must never crash startup, bad numbers fall back to the default, and
+#   keys are never printed. Add logging to stdout. Later add the resource monitor settings.
+
 """Settings loaded from environment variables (and an optional .env file)."""
 
 from __future__ import annotations

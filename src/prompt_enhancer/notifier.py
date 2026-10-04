@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for sending the resource alerts to Discord.
+# prompt: Write a small Discord webhook notifier using only the standard library: post a JSON
+#   message with a [group25] prefix, retry once, never raise, never log the URL, and do nothing
+#   when no URL is set.
+
 """Discord webhook notifications (stdlib only). Never raises: alerts must not break the app."""
 
 from __future__ import annotations

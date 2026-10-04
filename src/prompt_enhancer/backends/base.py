@@ -1,3 +1,9 @@
+# Used Opus 5.5 with High Effort, for the shared backend interface, error types and result
+#   records.
+# prompt: Define a Backend base class with name, model_id, availability() and generate(), a
+#   BackendError hierarchy with short human-readable reasons, and Attempt and EnhanceResult
+#   dataclasses.
+
 """Backend interface, error hierarchy, and result dataclasses."""
 
 from __future__ import annotations

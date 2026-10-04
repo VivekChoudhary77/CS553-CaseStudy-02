@@ -1,3 +1,11 @@
+# Used Opus 5.5 with High Effort, for creating the Gradio page and the entry point of the Prompt
+#   Enhancer app.
+# prompt: Build a gr.Blocks page with a status line, an input box, Backend, Length and Temperature
+#   controls, Enhance and Clear buttons, a read-only output with a copy button, a 'Served by'
+#   line, a fallback trace and three examples. Show a warning toast for each failed backend and a
+#   success toast naming the one that answered, and bind to 0.0.0.0:7860. Later add a live CPU and
+#   memory line, a busy banner and a 10-minute chart from the resource monitor.
+
 """Gradio UI and the `prompt-enhancer` entry point."""
 
 from __future__ import annotations

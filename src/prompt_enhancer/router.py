@@ -1,3 +1,9 @@
+# Used Opus 5.5 with High Effort, for the failover logic that tries one backend after another.
+# prompt: Write a pure-Python failover router with no gradio import: try the preferred backend
+#   first, then the others with Local last, skip unavailable backends with their reason, treat
+#   empty output as a failure, call an on_event callback for every failed and successful attempt,
+#   and raise AllBackendsFailed with all attempts. Later let Gemini try several models in order.
+
 """Failover router. Pure Python — no gradio import, so it can be unit-tested directly."""
 
 from __future__ import annotations

@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Used Opus 5.5 with High Effort, for the cron watchdog that re-secures the VM and keeps the app
+#   running.
+# prompt: Write a bash watchdog that runs from cron on linux.wpi.edu. Probe our key and the shared
+#   class key and, for the four states (OK, ENFORCE, RELOCK, DOWN), restore authorized_keys
+#   atomically, never removing the shared key before our key is proven to work. Use flock, log one
+#   line per event, notify Discord and run a post-relock hook. Later also check the app's URL and
+#   restart or redeploy it, alert after a long outage, and probe the shared key less often.
 # relock.sh — re-secure the CS553 group 25 VM after the professor rebuilds it.
 #
 # Runs from cron on linux.wpi.edu every 2 minutes (see ops/setup_watchdog.md).

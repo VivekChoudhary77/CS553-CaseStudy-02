@@ -1,3 +1,9 @@
+# Used Opus 5.5 with High Effort, for the Gemini backend.
+# prompt: Call Gemini through Google's native generateContent REST API with the standard library,
+#   because the OpenAI-compatible endpoint cut replies short. Send the key in a header, map the
+#   reasoning effort to a thinking budget, turn blocked replies and HTTP errors into clear
+#   reasons, and build one backend for each model listed in GEMINI_MODEL.
+
 """Gemini via Google's native generateContent REST API (stdlib HTTP, no vendor SDK).
 
 The OpenAI-compatible endpoint was dropped because it sometimes ends a reply after a

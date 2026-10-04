@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the shared code for OpenAI-compatible chat APIs.
+# prompt: Write a backend for OpenAI-compatible chat APIs using the openai SDK with max_retries=0.
+#   Map timeouts, 429, 401/403, other HTTP errors and connection errors to short reasons, treat
+#   empty output as a failure, and log a warning when a reply is cut off by the token limit.
+
 """Shared logic for backends reached through an OpenAI-compatible chat completions API."""
 
 from __future__ import annotations

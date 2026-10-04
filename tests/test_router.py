@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the tests of the failover router.
+# prompt: Write pytest tests with fake backends for the failover order, skipped backends, empty
+#   output, the all-fail case, the on_event order, the token caps per backend, the rotation
+#   between Gemini models and a paused Local backend. No network and no model download.
+
 import pytest
 
 from prompt_enhancer.backends.base import Backend, BackendError

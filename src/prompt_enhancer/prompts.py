@@ -1,3 +1,10 @@
+# Used Opus 5.5 with High Effort, for the system prompt, the length presets and the clean-up of
+#   model output.
+# prompt: Write the system prompt for rewriting a rough prompt, three length presets (Short,
+#   Medium, Long) with an instruction each and separate token caps for API and local backends, and
+#   a function that strips whitespace, a wrapping code fence and a 'Here is...' preamble from the
+#   output.
+
 """System prompt, length presets, and output post-processing."""
 
 from __future__ import annotations

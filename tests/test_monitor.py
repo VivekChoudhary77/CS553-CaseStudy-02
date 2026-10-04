@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the tests of the resource monitor.
+# prompt: Write pytest tests for the monitor: parsing /proc/meminfo and /proc/stat, the CPU
+#   percent arithmetic, going busy only after several samples, recovering only below the margin,
+#   one event per state change, a bounded history, and the Local backend being paused while busy.
+
 import pytest
 
 from prompt_enhancer.backends.local import PAUSED_REASON, STATUS_READY, LocalBackend

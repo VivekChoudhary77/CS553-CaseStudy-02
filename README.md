@@ -1,18 +1,20 @@
 # Prompt Enhancer
 
-A small Gradio web app that rewrites a rough prompt into a clearer, more effective one. You can choose one of three LLM backends. If that backend fails, the app automatically tries the others.
+A small Gradio web app that rewrites a rough prompt into a clearer one. It was built for CS553 (MLOps) Case Study 2 and runs on a small CPU-only VM (2 CPUs, 4 GB of memory) that is rebuilt without notice.
 
-Built for CS553 (MLOps) Case Study 2. The app is deliberately simple. The real target is a small, CPU-only, frequently wiped Ubuntu VM (2 vCPU, 4 GiB RAM), so installs are reproducible with `uv` and the app degrades gracefully when a backend is missing.
+It contains both products the case study asks for:
+- **API-based:** the Gemini and OpenRouter backends.
+- **Locally executed:** a small Qwen model that runs on the VM's CPU.
 
-## Architecture
+## How it works
 
 | Backend | How it runs |
 |---|---|
-| **Local** | A small instruct model (default `Qwen/Qwen2.5-0.5B-Instruct`) that runs in-process on CPU with 🤗 `transformers`. It loads in a background thread at startup. |
-| **Gemini** | Google AI Studio's native `generateContent` REST API, called with the Python standard library (no vendor SDK). Google's OpenAI-compatible endpoint sometimes ended replies after a few tokens while still reporting a normal stop; the native API did not. |
-| **OpenRouter** | OpenRouter's OpenAI-compatible endpoint, called with the `openai` SDK. |
+| **Local** | `Qwen/Qwen2.5-0.5B-Instruct` on the CPU, with `transformers`. It loads in the background at startup. |
+| **Gemini** | Google's native `generateContent` API. `GEMINI_MODEL` may list several models, tried in order. |
+| **OpenRouter** | OpenRouter's OpenAI-compatible API, with the `openai` SDK. |
 
-The **Backend** radio sets the *preferred* backend. The router tries it first, then the others. When Local isn't preferred, it always goes **last**, because it's the one backend that can't be rate-limited or lose network access.
+You pick a backend on the page. If it fails, the app tries the others, and Local goes last unless you picked it:
 
 | Selected | Try order |
 |---|---|
@@ -20,170 +22,112 @@ The **Backend** radio sets the *preferred* backend. The router tries it first, t
 | Gemini | Gemini → OpenRouter → Local |
 | OpenRouter | OpenRouter → Gemini → Local |
 
-The router skips a backend immediately, with no network call, if it is `not configured` or its model is `still loading`.
-
-`GEMINI_MODEL` can list several Gemini models. They are tried in order within the Gemini step, for example:
-`Gemini (gemini-3.1-flash-lite) ❌ HTTP 503 → Gemini (gemini-3.5-flash) ✅`.
-
-Rate limits, overload and timeouts move on to the next model. A missing config or a rejected API key skips the remaining Gemini models, because they share the key. The UI shows a warning toast for each failed attempt and a success toast naming the backend that answered. It also shows a **fallback trace**, for example:
-`Gemini ❌ rate limited (429) → OpenRouter ✅ 3.1 s`.
-
-```
-src/prompt_enhancer/
-├── app.py            Gradio UI + main() entry point
-├── config.py         .env loading, Settings dataclass, logging setup
-├── prompts.py        system prompt, Short/Medium/Long presets, output clean-up
-├── router.py         failover logic (no gradio import)
-├── monitor.py        CPU/memory sampling + busy/normal decision
-├── notifier.py       Discord webhook notifications
-└── backends/
-    ├── base.py           Backend interface, BackendError, Attempt/EnhanceResult
-    ├── openai_compat.py  OpenAI-compatible client + error mapping (used by OpenRouter)
-    ├── gemini.py         native Gemini REST API
-    ├── openrouter.py
-    └── local.py          CPU transformers backend (background load, one-at-a-time lock)
-scripts/
-├── download_model.py     pre-fetch the local model into the HF cache
-└── smoke_test.py         one tiny call per configured backend (health check)
-```
+The page shows a warning for each backend that failed and a trace of what happened, for example:
+`Gemini ❌ rate limited (429) → OpenRouter ✅ 3.1 s`
 
 ## Setup
 
-You need [`uv`](https://docs.astral.sh/uv/). It installs Python 3.11 and the **CPU-only** PyTorch build automatically.
+You need [`uv`](https://docs.astral.sh/uv/). It installs Python 3.11 and the CPU-only PyTorch build.
 
 ```bash
 uv sync
-cp .env.example .env        # then fill in keys and model ids
+cp .env.example .env        # then fill in your keys and model names
 uv run python scripts/download_model.py
 uv run python scripts/smoke_test.py
 uv run prompt-enhancer      # open http://localhost:7860
-uv run pytest
 ```
 
-To check that torch is the CPU build (it should print a version ending in `+cpu`, then `False`):
+A missing API key never stops the app. That backend is shown as not configured and skipped.
 
-```bash
-uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
+## Settings
 
-A missing API key or model never stops the app from starting. That backend just shows ❌ and is skipped. `smoke_test.py` exits non-zero if no backend succeeds; `--skip-local` tests only the remote APIs.
-
-## Environment variables
-
-All of these go in `.env`, which git ignores. See `.env.example`.
+All settings go in `.env`, which git ignores. `.env.example` lists every one with a comment.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | *(blank)* | Blank → Gemini "not configured" |
-| `GEMINI_MODEL` | *(blank)* | Exact model id from Google AI Studio, or a comma-separated list such as `gemini-3.1-flash-lite,gemini-3.5-flash,gemini-2.5-flash`. The models are tried in order, each as its own step, before failover moves to the next backend. Put the model with the biggest free quota first |
-| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | The old `…/v1beta/openai/` URL is also accepted |
-| `GEMINI_REASONING_EFFORT` | `low` | `none`/`minimal`/`low`/`medium`/`high` → thinking budget 0/512/1024/8192/24576 tokens; blank omits it. **Use `none`** unless you need reasoning: with `low`, thinking tokens count against the cap and Gemini 2.5 Flash cut Short/Medium outputs off mid-sentence (logged as a warning) |
-| `OPENROUTER_API_KEY` | *(blank)* | Blank → OpenRouter "not configured" |
-| `OPENROUTER_MODEL` | *(blank)* | Any OpenRouter model id (e.g. a `:free` model) |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
-| `OPENROUTER_REASONING_EFFORT` | `none` | Sent as `reasoning.effort`; `none` turns reasoning off (about 2× faster, no hidden reasoning tokens counted against the cap). Blank uses the model's default |
-| `LOCAL_MODEL_ID` | `Qwen/Qwen2.5-0.5B-Instruct` | Must fit in ~2 GB fp32; alternative: `HuggingFaceTB/SmolLM2-360M-Instruct` |
-| `LOCAL_NUM_THREADS` | `2` | `torch.set_num_threads` |
-| `LOCAL_MAX_TIME_S` | `90` | Hard wall-clock limit for one local generation |
-| `API_TIMEOUT_S` | `20` | Per-request timeout for remote APIs (no SDK retries) |
-| `HOST` | `0.0.0.0` | Must stay `0.0.0.0` on the VM (reached via port forward on `eth0`) |
-| `PORT` | `7860` | |
-| `LOG_LEVEL` | `INFO` | Logs go to stdout; API keys and prompt text are never logged, only lengths |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | blank | One model, or a comma-separated list tried in order |
+| `GEMINI_REASONING_EFFORT` | `low` | Use `none`: with reasoning on, short answers were cut off |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | blank | |
+| `OPENROUTER_REASONING_EFFORT` | `none` | `none` turns reasoning off |
+| `LOCAL_MODEL_ID` | `Qwen/Qwen2.5-0.5B-Instruct` | Must fit in about 2 GB |
+| `LOCAL_NUM_THREADS`, `LOCAL_MAX_TIME_S` | `2`, `90` | CPU threads and the time limit for one local answer |
+| `API_TIMEOUT_S` | `20` | Time limit for one API call |
+| `HOST`, `PORT` | `0.0.0.0`, `7860` | Keep these on the VM. Port 7860 is reached from outside on port 8025 |
+| `DISCORD_WEBHOOK_URL` | blank | For the resource alerts below. Blank means no alerts |
 
-The Gemini free tier is small. For Gemini 2.5 Flash it is 5 requests per minute and 20 per day, which you can check under AI Studio → Rate Limit. Past that limit, requests fail with `rate limited (429)` and move on to the next Gemini model, then to the next backend. Put a model with a larger quota first in `GEMINI_MODEL`, such as `gemini-3.1-flash-lite` (15 per minute, 500 per day). `gemini-2.5-flash-lite` returns 404 ("no longer available to new users") for new keys.
-
-Once the model has been downloaded, you can set `HF_HUB_OFFLINE=1` to stop the local backend from contacting the Hub at startup.
+API keys and prompt text are never written to the logs.
 
 ## Tests
 
 ```bash
-uv run pytest
+uv run pytest                 # the app
+bash tests/test_relock.sh     # the watchdog
+bash tests/test_deploy.sh     # the deploy scripts
 ```
 
-The tests use fake backends, so they need no network and download no model. They cover:
-- failover order
-- skip reasons
-- empty-output handling
-- `on_event` callbacks
-- generation kwargs
-- length presets
-- output clean-up
-- config defaults
-- mapping of API errors to readable reasons
+None of them needs a network, a model download or the VM.
 
-## Demoing failover
+## Deployment and recovery
 
-You can override variables for a single run on the command line without editing `.env`. Values set this way take precedence over `.env`.
+The scripts and guides are in [`ops/`](ops/):
 
-1. **Gemini → OpenRouter.** Run `GEMINI_API_KEY= uv run prompt-enhancer` and select **Gemini**. You'll get the warning toast *"⚠️ Gemini failed (not configured) — trying OpenRouter"*, and the output comes from OpenRouter.
-2. **… → Local.** Also break OpenRouter:
-   `GEMINI_API_KEY= OPENROUTER_MODEL=bogus/model uv run prompt-enhancer`. Gemini and OpenRouter both fail and Local answers. The trace shows the whole chain.
-3. **Local still loading → Gemini.** Select **Local** and click Enhance in the first few seconds after startup, while the status line still shows ⏳ loading. The request falls through to Gemini.
-4. **Everything fails.** Break both remote backends and select **Local** while it is still loading. An error toast lists each backend with its reason.
+| File | What it is |
+|---|---|
+| [`ops/README.md`](ops/README.md) | How the watchdog, the deploy and the recovery work |
+| [`ops/setup_watchdog.md`](ops/setup_watchdog.md) | Step-by-step: lock the VM to our SSH keys |
+| [`ops/setup_deploy.md`](ops/setup_deploy.md) | Step-by-step: deploy the app and switch on recovery |
+
+In short: `ops/deploy.sh` installs the app on the VM as a systemd service. `ops/relock.sh` runs from cron on `linux.wpi.edu` every 2 minutes. After a rebuild it restores our SSH keys and reinstalls the app, and it restarts the app if it stops answering.
 
 ## Resource monitoring and adaptive response
 
 The app watches the machine it runs on and reduces its own load when the machine is near capacity.
 
-**How usage is measured.** A background thread in the app (`src/prompt_enhancer/monitor.py`) takes a sample every `MONITOR_INTERVAL_S` seconds (default 5):
-- **CPU %:** from the aggregate `cpu` line of `/proc/stat`. It is the share of time, since the previous sample, that was not idle or waiting for I/O.
-- **Memory %:** from `/proc/meminfo`, as `1 - MemAvailable / MemTotal`. File cache that the kernel can release counts as available.
+**How usage is measured.** A background thread (`src/prompt_enhancer/monitor.py`) takes a sample every 5 seconds:
+- **CPU %:** from `/proc/stat`, the share of time since the last sample that was not idle.
+- **Memory %:** from `/proc/meminfo`, as `1 - MemAvailable / MemTotal`.
 
-No extra package or service is needed. On the 4 GiB VM with the local model loaded, memory sits at about 60%.
+No extra package or service is needed. On the VM, with the local model loaded, memory sits at about 60%.
 
 **Thresholds.**
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `CPU_HIGH_PCT` | `80` | CPU threshold |
-| `MEM_HIGH_PCT` | `85` | memory threshold |
-| `MONITOR_TRIGGER_SAMPLES` | `4` | samples in a row at or above a threshold before the app goes busy (20 s), so one short spike or one ordinary local request does not trigger it |
-| `MONITOR_CLEAR_SAMPLES` | `6` | samples in a row below the clear level before the app returns to normal (30 s) |
-| `MONITOR_CLEAR_MARGIN_PCT` | `10` | the clear level is this far below each threshold (CPU under 70%, memory under 75%), so the mode does not flip back and forth at the edge |
-| `MONITOR_ENABLED` | `true` | set to `false` to switch the monitor off |
+| `MEM_HIGH_PCT` | `85` | Memory threshold |
+| `MONITOR_TRIGGER_SAMPLES` | `4` | Samples in a row over a threshold before the app goes busy (20 s), so a short spike does not count |
+| `MONITOR_CLEAR_SAMPLES` | `6` | Samples in a row under the clear level before it returns to normal (30 s) |
+| `MONITOR_CLEAR_MARGIN_PCT` | `10` | The clear level is this far below each threshold (CPU under 70%, memory under 75%) |
+| `MONITOR_INTERVAL_S` | `5` | Seconds between samples |
+| `MONITOR_ENABLED` | `true` | Set to `false` to switch the monitor off |
 
-**What happens when a threshold is crossed.** The app enters **busy** mode and does three things:
-1. **Notifies the team.** It posts to the Discord webhook in `DISCORD_WEBHOOK_URL`, for example:
-   `[group25] resource alert on group25: CPU 97% / memory 62% (thresholds 80% / 85%) -> local model paused`
-2. **Reduces the workload.** The local model, which is the CPU-heavy part, is paused. The Local backend reports `paused: system near capacity`, so the failover router skips it and sends the request to Gemini or OpenRouter. The warning toast and the fallback trace show the reason:
+**What happens when a threshold is crossed.** The app goes into busy mode and:
+1. **Notifies the team** on Discord:
+   `[group25] resource alert on group25: CPU 100% / memory 59% (thresholds 80% / 85%) -> local model paused`
+2. **Reduces the workload.** The local model, which is the CPU-heavy part, is paused. Requests go to Gemini or OpenRouter instead, and the trace shows why:
    `Local ❌ paused: system near capacity → Gemini ✅ 4.0 s`
-3. **Tells the user.** The page shows `Mode: busy` and a "System near capacity" banner.
+3. **Tells the user.** The page shows `Mode: busy` and a warning.
 
-If Gemini and OpenRouter both fail while the app is busy, the request fails with an error that lists each reason.
+If Gemini and OpenRouter both fail while the app is busy, the request fails with an error listing each reason.
 
-**How it returns to normal.** When CPU and memory both stay below the clear level for `MONITOR_CLEAR_SAMPLES` samples, the app leaves busy mode. The local model is available again, the banner disappears, and Discord gets:
-`[group25] resources back to normal on group25: CPU 12% / memory 60% -> local model resumed`
+**How it returns to normal.** When CPU and memory both stay under the clear level for 30 seconds, the local model is available again, the warning disappears, and Discord gets:
+`[group25] resources back to normal on group25: CPU 2% / memory 59% -> local model resumed`
 
-Notifications are sent only on a change of mode, never on every sample.
+Messages are sent only when the mode changes, never on every sample.
 
 **Where to see it.** The page shows a live line (`System: CPU 42% · Memory 61% · Mode: normal`) and a chart of the last 10 minutes.
 
-**How to demo it.** Create real CPU load on the VM for a minute with two busy loops, one per CPU:
+**How to test it.** Run two busy loops on the VM, one per CPU:
 
 ```bash
 timeout 60 sh -c 'while :; do :; done' &
 timeout 60 sh -c 'while :; do :; done' &
 ```
 
-After about 20 s the alert arrives and the page shows busy mode. A request with Local selected is then served by Gemini. About 30 s after the loops end, the app returns to normal. For a quicker test, lower a threshold instead, e.g. `MEM_HIGH_PCT=10`.
+In our test on the VM, the alert came 23 s after the load started, and the app returned to normal 28 s after it ended.
 
-## Resource notes
+## Size and limits
 
-These numbers were measured on a laptop CPU with `LOCAL_NUM_THREADS=2`.
-
-**Load time:** the local model loads in about 7 s with a warm disk cache and about 21 s with a cold one.
-
-**Local generation latency (warm):**
-
-| Preset | Token cap | Latency |
-|---|---|---|
-| Short | 128 | ~2–8 s |
-| Medium | 256 | ~4–8 s |
-| Long | 384 | ~4–11 s |
-
-**Memory:**
-- About 2.4–2.5 GB of resident (anon) memory with the model loaded and generating.
-- The app ran all three presets under a hard 2.6 GiB cgroup limit with swap disabled, with no OOM.
-- `VmHWM` reports a higher, transient ~3.2–3.5 GB peak while loading. That extra is ~1 GB of clean, memory-mapped weight-file pages held during the bf16 → fp32 upcast, which the kernel can reclaim.
-
-The 0.5B local model is a fallback. Its rewrites are noticeably weaker than Gemini's or OpenRouter's, and it sometimes answers the prompt instead of rewriting it.
+- **Disk on the VM:** about 2.3 GB (packages 1.2 GB, model 954 MB).
+- **Memory:** about 2.4 GB with the local model loaded. The service is capped at 3200 MB.
+- **Local model quality:** the 0.5B model is a fallback. Its rewrites are weaker than Gemini's or OpenRouter's, and it sometimes answers the prompt instead of rewriting it.

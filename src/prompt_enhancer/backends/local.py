@@ -1,3 +1,11 @@
+# Used Opus 5.5 with High Effort, for the local backend that runs a small model on the CPU.
+# prompt: Implement a CPU-only transformers backend: load the model in a background thread in
+#   float32, report 'model still loading' until it is ready, build inputs with the chat template,
+#   keep the sampling settings in a pure build_generation_kwargs function (temperature 0 means
+#   greedy), decode only the new tokens, allow one generation at a time, and map out-of-memory
+#   errors to a clear reason. Later add a pause check so the resource monitor can switch it off
+#   under load.
+
 """Local CPU backend using Hugging Face transformers.
 
 torch/transformers are imported lazily so the UI can start before they finish importing.

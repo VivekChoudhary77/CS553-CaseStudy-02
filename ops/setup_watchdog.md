@@ -162,6 +162,10 @@ tail -n 5 ~/.cs553/relock.log
 
 ### Optional: check every ~20 seconds (smaller exposure window)
 
+> **We no longer use this.** With a check every 20 seconds, the WPI server was cut off from
+> the VM and from Discord for about an hour, several times (cause not confirmed; it looked
+> like an automatic block). We went back to every 2 minutes. This section is kept as a record.
+
 Cron can't run more often than once a minute. Three lines offset by 0/20/40 s give a check about every 20 s, which shrinks the window after a rebuild from up to 2 minutes to about 20 s. `flock` inside `relock.sh` keeps runs from overlapping.
 
 ```bash

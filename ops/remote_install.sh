@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Used Opus 5.5 with High Effort, for the installer that runs on the VM.
+# prompt: Write the installer that runs on the VM: install a pinned uv, clone or update the GitHub
+#   repo, run uv sync --locked, install the settings file with mode 600, download the local model,
+#   write a systemd unit with Restart=always and a memory cap, restart only if something changed,
+#   and wait until the app answers.
 # remote_install.sh — install or update Prompt Enhancer ON THE VM. Idempotent.
 #
 # Normally streamed by ops/deploy.sh:  ssh vm 'bash -s -- <repo_url> <ref> <uv_version>'

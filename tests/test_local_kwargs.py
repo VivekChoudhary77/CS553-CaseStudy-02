@@ -1,3 +1,8 @@
+# Used Opus 5.5 with High Effort, for the tests of the local model's sampling settings.
+# prompt: Write pytest tests for build_generation_kwargs: temperature 0 gives greedy decoding with
+#   no temperature key, a positive temperature turns sampling on, and max_new_tokens and max_time
+#   are passed through.
+
 from prompt_enhancer.backends.local import build_generation_kwargs
 
 

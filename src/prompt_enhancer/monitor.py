@@ -1,3 +1,10 @@
+# Used Opus 5.5 with High Effort, for the resource monitor of the bonus part (CPU and memory
+#   thresholds).
+# prompt: Add a resource monitor with no new dependency: read CPU from /proc/stat and memory from
+#   /proc/meminfo every few seconds, go 'busy' after several samples in a row above a threshold
+#   and back to 'normal' after several samples below it with a margin, keep 10 minutes of history,
+#   and call a callback only when the state changes.
+
 """Resource monitor: sample CPU and memory, and decide when the machine is "busy".
 
 No third-party dependency: CPU comes from /proc/stat, memory from /proc/meminfo.

@@ -1,3 +1,7 @@
+# Used Opus 5.5 with High Effort, for the OpenRouter backend.
+# prompt: Add an OpenRouter backend on top of the OpenAI-compatible one, with the attribution
+#   headers and a setting that turns reasoning off.
+
 """OpenRouter via its OpenAI-compatible endpoint."""
 
 from __future__ import annotations
